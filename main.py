@@ -320,21 +320,20 @@ class ProductEventRepository:
             reason = self._get_blocking_reason(connection, reason_id)
             if reason is None:
                 raise business_error("BLOCKING_REASON_NOT_FOUND", "Blocking reason not found")
-            if reason.hard_block:
-                raise business_error("HARD_BLOCK_REASON_NOT_ALLOWED", "Hard-block reason cannot be used for soft block")
 
+            status_value = "HARD_BLOCKED" if reason.hard_block else "BLOCKED"
             now = now_iso()
             connection.execute(
                 """
                 UPDATE product_moderation
-                SET status = 'BLOCKED',
+                SET status = ?,
                     blocking_reason_id = ?,
                     moderator_comment = ?,
                     date_moderation = ?,
                     date_updated = ?
                 WHERE id = ?
                 """,
-                (reason.id, moderator_comment, now, now, row["id"]),
+                (status_value, reason.id, moderator_comment, now, now, row["id"]),
             )
             connection.execute(
                 "DELETE FROM product_moderation_field_report WHERE product_moderation_id = ?",
@@ -365,6 +364,7 @@ class ProductEventRepository:
                 reason=reason,
                 moderator_comment=moderator_comment,
                 field_reports=field_reports,
+                hard_block=reason.hard_block,
             )
             send_moderation_event_to_b2b(
                 product_id=row["product_id"],
@@ -372,6 +372,7 @@ class ProductEventRepository:
                 reason_id=reason.id,
                 moderator_comment=moderator_comment,
                 field_reports=field_reports,
+                hard_block=reason.hard_block,
             )
             connection.commit()
             return response
@@ -640,7 +641,7 @@ class ProductEventRepository:
 
     def _validate_decision_card(self, row: sqlite3.Row, moderator_id: str) -> None:
         if row["status"] == "HARD_BLOCKED":
-            raise conflict_error("PRODUCT_HARD_BLOCKED", "Product is permanently blocked")
+            raise forbidden_error("PRODUCT_HARD_BLOCKED", "Product is permanently blocked")
         if row["status"] != "IN_REVIEW":
             raise conflict_error("PRODUCT_NOT_IN_REVIEW", "Product is not in review")
         if row["moderator_id"] != moderator_id:
@@ -662,11 +663,12 @@ class ProductEventRepository:
         reason: BlockingReason,
         moderator_comment: str,
         field_reports: list[dict[str, Any]],
+        hard_block: bool,
     ) -> dict[str, Any]:
         return {
             "product_id": product_id,
-            "status": "BLOCKED",
-            "hard_block": False,
+            "status": "HARD_BLOCKED" if hard_block else "BLOCKED",
+            "hard_block": hard_block,
             "blocking_reason": {
                 "id": reason.id,
                 "title": reason.title,
@@ -862,6 +864,7 @@ def send_moderation_event_to_b2b(
     reason_id: str,
     moderator_comment: str,
     field_reports: list[dict[str, Any]],
+    hard_block: bool,
 ) -> None:
     b2b_url = os.getenv("B2B_URL", DEFAULT_B2B_URL).rstrip("/")
     timeout = float(os.getenv("B2B_TIMEOUT_SECONDS", str(DEFAULT_B2B_TIMEOUT_SECONDS)))
@@ -873,7 +876,7 @@ def send_moderation_event_to_b2b(
         "moderator_id": moderator_id,
         "moderator_comment": moderator_comment,
         "blocking_reason_id": reason_id,
-        "hard_block": False,
+        "hard_block": hard_block,
         "field_reports": field_reports,
     }
     response = httpx.post(

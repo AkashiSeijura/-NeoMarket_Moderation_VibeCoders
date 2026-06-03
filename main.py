@@ -2,7 +2,7 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 SERVICE_KEY_HEADER = "X-Service-Key"
 DEFAULT_B2B_TO_MOD_KEY = "b2b-to-mod-key"
 DEFAULT_DB_PATH = "moderation.sqlite3"
+DEFAULT_IN_REVIEW_TIMEOUT_MINUTES = 30
 
 
 class ErrorResponse(BaseModel):
@@ -40,6 +41,11 @@ class CanonicalProductEvent(BaseModel):
     queue_priority: int | None = Field(default=None, ge=1, le=4)
 
 
+class ClaimQueueRequest(BaseModel):
+    queue_priority: int | None = Field(default=None, ge=1, le=4)
+    category_ids: list[UUID] | None = None
+
+
 @dataclass(frozen=True)
 class ProductEvent:
     event_type: str
@@ -58,7 +64,7 @@ class ProductEventRepository:
         self.init_db()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(self.db_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -131,8 +137,11 @@ class ProductEventRepository:
         queue_priority: int = 1,
         moderator_id: str | None = None,
         blocking_reason_id: str | None = None,
+        date_created: str | None = None,
+        date_moderation: str | None = None,
     ) -> None:
         now = now_iso()
+        created_at = date_created or now
         clean_after = strip_private_fields(json_after)
         with self.connect() as connection:
             connection.execute(
@@ -143,7 +152,7 @@ class ProductEventRepository:
                     moderator_comment, date_created, date_updated, date_moderation,
                     total_active_quantity
                 )
-                VALUES (?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, NULL, ?)
+                VALUES (?, ?, ?, NULL, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid4()),
@@ -154,8 +163,9 @@ class ProductEventRepository:
                     dump_json(clean_after),
                     blocking_reason_id,
                     moderator_id,
+                    created_at,
                     now,
-                    now,
+                    date_moderation,
                     total_active_quantity(clean_after),
                 ),
             )
@@ -226,6 +236,101 @@ class ProductEventRepository:
                 ),
             )
             return False
+
+    def claim_next_card(
+        self,
+        *,
+        moderator_id: str,
+        queue_priority: int | None = None,
+        category_ids: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._return_expired_reviews(connection)
+
+            active_card = connection.execute(
+                """
+                SELECT 1
+                FROM product_moderation
+                WHERE status = 'IN_REVIEW' AND moderator_id = ?
+                LIMIT 1
+                """,
+                (moderator_id,),
+            ).fetchone()
+            if active_card is not None:
+                raise conflict_error(
+                    "MODERATOR_ALREADY_HAS_IN_REVIEW",
+                    "Moderator already has an active IN_REVIEW ticket",
+                )
+
+            where_parts = ["status = 'PENDING'"]
+            params: list[Any] = []
+            if queue_priority is not None:
+                where_parts.append("queue_priority = ?")
+                params.append(queue_priority)
+            if category_ids:
+                placeholders = ", ".join("?" for _ in category_ids)
+                where_parts.append(f"category_id IN ({placeholders})")
+                params.extend(category_ids)
+
+            row = connection.execute(
+                f"""
+                SELECT *
+                FROM product_moderation
+                WHERE {" AND ".join(where_parts)}
+                ORDER BY queue_priority ASC, date_created ASC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+
+            now = now_iso()
+            cursor = connection.execute(
+                """
+                UPDATE product_moderation
+                SET status = 'IN_REVIEW',
+                    moderator_id = ?,
+                    date_moderation = ?,
+                    date_updated = ?
+                WHERE id = ? AND status = 'PENDING'
+                """,
+                (moderator_id, now, now, row["id"]),
+            )
+            if cursor.rowcount != 1:
+                raise conflict_error("TICKET_ALREADY_CLAIMED", "Ticket was already claimed")
+
+            claimed = connection.execute(
+                "SELECT * FROM product_moderation WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            connection.commit()
+            return self._ticket_response_from_row(claimed)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _return_expired_reviews(self, connection: sqlite3.Connection) -> None:
+        cutoff = datetime.now(UTC) - timedelta(minutes=in_review_timeout_minutes())
+        now = now_iso()
+        connection.execute(
+            """
+            UPDATE product_moderation
+            SET status = 'PENDING',
+                moderator_id = NULL,
+                date_moderation = NULL,
+                date_updated = ?
+            WHERE status = 'IN_REVIEW'
+              AND date_moderation IS NOT NULL
+              AND date_moderation <= ?
+            """,
+            (now, cutoff.isoformat()),
+        )
 
     def _event_processed(self, connection: sqlite3.Connection, idempotency_key: str) -> bool:
         row = connection.execute(
@@ -353,9 +458,40 @@ class ProductEventRepository:
             "total_active_quantity": row["total_active_quantity"],
         }
 
+    def _ticket_response_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        claimed_at = row["date_moderation"]
+        return {
+            "id": row["id"],
+            "product_id": row["product_id"],
+            "seller_id": row["seller_id"],
+            "category_id": row["category_id"],
+            "kind": "EDIT" if row["json_before"] else "CREATE",
+            "status": row["status"],
+            "queue_priority": row["queue_priority"],
+            "assigned_moderator_id": row["moderator_id"],
+            "claimed_at": claimed_at,
+            "claim_expires_at": claim_expires_at(claimed_at),
+            "decision_at": None,
+            "created_at": row["date_created"],
+            "updated_at": row["date_updated"],
+        }
+
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def in_review_timeout_minutes() -> int:
+    raw_value = os.getenv("MODERATION_IN_REVIEW_TIMEOUT_MINUTES")
+    if raw_value is None:
+        return DEFAULT_IN_REVIEW_TIMEOUT_MINUTES
+    return max(1, int(raw_value))
+
+
+def claim_expires_at(claimed_at: str | None) -> str | None:
+    if claimed_at is None:
+        return None
+    return (datetime.fromisoformat(claimed_at) + timedelta(minutes=in_review_timeout_minutes())).isoformat()
 
 
 def dump_json(value: dict[str, Any]) -> str:
@@ -400,6 +536,13 @@ def business_error(code: str, message: str) -> HTTPException:
     )
 
 
+def conflict_error(code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=ErrorResponse(code=code, message=message).model_dump(),
+    )
+
+
 def require_service_key(x_service_key: str | None) -> None:
     expected = os.getenv("B2B_TO_MOD_KEY", DEFAULT_B2B_TO_MOD_KEY)
     if x_service_key != expected:
@@ -410,6 +553,22 @@ def require_service_key(x_service_key: str | None) -> None:
                 message=f"Missing or invalid {SERVICE_KEY_HEADER}",
             ).model_dump(),
         )
+
+
+def require_moderator_id(authorization: str | None) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ErrorResponse(code="UNAUTHORIZED", message="Missing bearer token").model_dump(),
+        )
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        return str(UUID(token))
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ErrorResponse(code="UNAUTHORIZED", message="Invalid bearer token").model_dump(),
+        ) from error
 
 
 def parse_openapi_event(incoming: IncomingB2BEvent) -> ProductEvent:
@@ -506,3 +665,21 @@ def get_product_moderation(product_id: UUID) -> dict[str, Any]:
             detail=ErrorResponse(code="NOT_FOUND", message="Product moderation card not found").model_dump(),
         )
     return card
+
+
+@app.post("/api/v1/queue/claim", status_code=status.HTTP_200_OK)
+def claim_next_queue_ticket(
+    response: Response,
+    request: ClaimQueueRequest | None = None,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict[str, Any] | None:
+    moderator_id = require_moderator_id(authorization)
+    claimed = repository.claim_next_card(
+        moderator_id=moderator_id,
+        queue_priority=request.queue_priority if request else None,
+        category_ids=[str(category_id) for category_id in request.category_ids] if request and request.category_ids else None,
+    )
+    if claimed is None:
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return None
+    return claimed

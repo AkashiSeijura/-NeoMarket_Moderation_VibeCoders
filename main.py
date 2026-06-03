@@ -100,6 +100,16 @@ class BlockDecisionRequest(BaseModel):
         return (comment or "").strip()
 
 
+class ApproveDecisionRequest(BaseModel):
+    moderator_comment: str | None = Field(default=None, max_length=1000)
+    comment: str | None = Field(default=None, max_length=2000)
+
+    @property
+    def decision_comment(self) -> str | None:
+        comment = self.moderator_comment if self.moderator_comment is not None else self.comment
+        return comment.strip() if comment and comment.strip() else None
+
+
 @dataclass(frozen=True)
 class ProductEvent:
     event_type: str
@@ -376,6 +386,63 @@ class ProductEventRepository:
             )
             connection.commit()
             return response
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def approve_card(
+        self,
+        *,
+        product_id: str | None = None,
+        ticket_id: str | None = None,
+        moderator_id: str,
+        moderator_comment: str | None,
+    ) -> dict[str, Any]:
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._get_decision_card(connection, product_id=product_id, ticket_id=ticket_id)
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=ErrorResponse(code="NOT_FOUND", message="Product moderation card not found").model_dump(),
+                )
+            self._validate_decision_card(row, moderator_id)
+
+            b2b_product = get_b2b_product(row["product_id"])
+            if not b2b_product.get("skus"):
+                raise conflict_error("PRODUCT_WITHOUT_SKU", "Product has no SKUs, cannot approve")
+
+            now = now_iso()
+            connection.execute(
+                """
+                UPDATE product_moderation
+                SET status = 'MODERATED',
+                    date_moderation = ?,
+                    moderator_comment = ?,
+                    blocking_reason_id = NULL,
+                    date_updated = ?
+                WHERE id = ?
+                """,
+                (now, moderator_comment, now, row["id"]),
+            )
+            connection.execute(
+                "DELETE FROM product_moderation_field_report WHERE product_moderation_id = ?",
+                (row["id"],),
+            )
+            send_approve_event_to_b2b(
+                product_id=row["product_id"],
+                moderator_id=moderator_id,
+                moderator_comment=moderator_comment,
+            )
+            updated_row = connection.execute(
+                "SELECT * FROM product_moderation WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            connection.commit()
+            return self._ticket_response_from_row(updated_row)
         except Exception:
             connection.rollback()
             raise
@@ -857,6 +924,53 @@ def field_name_from_path(field_path: str | None) -> str | None:
     return path if path in ALLOWED_FIELD_NAMES else None
 
 
+def b2b_unavailable_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=ErrorResponse(code="B2B_UNAVAILABLE", message="B2B service is unavailable").model_dump(),
+    )
+
+
+def get_b2b_product(product_id: str) -> dict[str, Any]:
+    b2b_url = os.getenv("B2B_URL", DEFAULT_B2B_URL).rstrip("/")
+    timeout = float(os.getenv("B2B_TIMEOUT_SECONDS", str(DEFAULT_B2B_TIMEOUT_SECONDS)))
+    try:
+        response = httpx.get(
+            f"{b2b_url}/api/v1/products/{product_id}",
+            headers={"X-Service-Key": os.getenv("MOD_TO_B2B_KEY", DEFAULT_MOD_TO_B2B_KEY)},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as error:
+        raise b2b_unavailable_error() from error
+    # 5xx means B2B is down; 403/404 here means the product is not service-readable
+    # before approve, which we must not treat as a successful check.
+    if response.status_code != status.HTTP_200_OK:
+        raise b2b_unavailable_error()
+    return response.json()
+
+
+def send_approve_event_to_b2b(
+    *,
+    product_id: str,
+    moderator_id: str,
+    moderator_comment: str | None,
+) -> None:
+    b2b_url = os.getenv("B2B_URL", DEFAULT_B2B_URL).rstrip("/")
+    timeout = float(os.getenv("B2B_TIMEOUT_SECONDS", str(DEFAULT_B2B_TIMEOUT_SECONDS)))
+    payload = {
+        "idempotency_key": str(uuid4()),
+        "product_id": product_id,
+        "status": "MODERATED",
+    }
+    response = httpx.post(
+        f"{b2b_url}/api/v1/events/moderation",
+        json=payload,
+        headers={"X-Service-Key": os.getenv("MOD_TO_B2B_KEY", DEFAULT_MOD_TO_B2B_KEY)},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+
+
 def send_moderation_event_to_b2b(
     *,
     product_id: str,
@@ -1015,6 +1129,34 @@ def decline_product(
         reason_id=request.reason_id,
         moderator_comment=request.decision_comment,
         field_reports=normalize_field_reports(request.field_reports),
+    )
+
+
+@app.post("/api/v1/products/{product_id}/approve", status_code=status.HTTP_200_OK)
+def approve_product(
+    product_id: UUID,
+    request: ApproveDecisionRequest | None = None,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict[str, Any]:
+    moderator_id = require_moderator_id(authorization)
+    return repository.approve_card(
+        product_id=str(product_id),
+        moderator_id=moderator_id,
+        moderator_comment=request.decision_comment if request else None,
+    )
+
+
+@app.post("/api/v1/tickets/{ticket_id}/approve", status_code=status.HTTP_200_OK)
+def approve_ticket(
+    ticket_id: UUID,
+    request: ApproveDecisionRequest | None = None,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict[str, Any]:
+    moderator_id = require_moderator_id(authorization)
+    return repository.approve_card(
+        ticket_id=str(ticket_id),
+        moderator_id=moderator_id,
+        moderator_comment=request.decision_comment if request else None,
     )
 
 

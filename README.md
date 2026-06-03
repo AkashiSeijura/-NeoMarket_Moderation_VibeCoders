@@ -1,6 +1,6 @@
 # NeoMarket Moderation
 
-Минимальный сервис Moderation для US-MOD-01, US-MOD-02, US-MOD-04 и US-MOD-05.
+Минимальный сервис Moderation для US-MOD-01, US-MOD-02, US-MOD-03, US-MOD-04 и US-MOD-05.
 
 ## Запуск тестов
 
@@ -11,20 +11,29 @@ C:\Users\perfe\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\p
 ## Endpoints
 
 - `POST /api/v1/b2b/events` - основной endpoint приема событий от B2B по OpenAPI Moderation.
-- `POST /api/v1/events/product` - совместимый alias под канон MOD-1.
+- `POST /api/v1/events/product` - совместимый alias под canon-flow MOD-1.
 - `POST /api/v1/queue/claim` - взять следующий тикет в работу по OpenAPI Moderation.
-- `POST /api/v1/products/{product_id}/decline` - решение об отклонении товара по product_id.
-  Маршрут определяется причиной блокировки:
-  - `reason.hard_block = false` → статус `BLOCKED` (soft-block, обратимый).
-  - `reason.hard_block = true` → статус `HARD_BLOCKED` (терминальный, необратимый через API).
-  Отправляет `BLOCKED` событие в B2B с `hard_block=true/false` соответственно.
-  B2B отвечает за каскад `PRODUCT_BLOCKED` в B2C; Moderation не вызывает B2C напрямую.
-  `HARD_BLOCKED` — терминальный статус: все мутирующие endpoint-ы на такой карточке возвращают 403.
-  Снятие `HARD_BLOCKED` возможно только через суперадминский data-fix вне штатного API.
-  Входящие `EDITED` события по `HARD_BLOCKED` карточкам игнорируются идемпотентно (статус сохраняется).
-  Входящие `DELETED` события удаляют запись из Moderation независимо от статуса.
-- `POST /api/v1/tickets/{ticket_id}/block` - OpenAPI-совместимый block endpoint по ticket_id.
+- `POST /api/v1/tickets/{ticket_id}/approve` - OpenAPI endpoint одобрения тикета; переводит карточку `IN_REVIEW` -> `MODERATED`, проверяет владельца, актуальные SKU в B2B и отправляет `MODERATED` event в B2B.
+- `POST /api/v1/products/{product_id}/approve` - product-based alias из canon-flow MOD-3.
+- `POST /api/v1/tickets/{ticket_id}/block` - OpenAPI endpoint блокировки тикета.
+- `POST /api/v1/products/{product_id}/decline` - product-based alias из canon-flow MOD-4/MOD-5.
 - `GET /api/v1/product-moderation/{product_id}` - технический просмотр карточки по товару.
+
+`decline`/`block` определяет тип блокировки по `reason.hard_block`:
+
+- `hard_block = false` -> статус `BLOCKED` (soft-block, обратимый через повторную модерацию после EDITED).
+- `hard_block = true` -> статус `HARD_BLOCKED` (терминальный, штатного API для снятия нет).
+
+Moderation отправляет B2B событие `BLOCKED` с `hard_block=true/false`. Каскад в B2C остается ответственностью B2B; Moderation не вызывает B2C напрямую.
+
+## Приоритет протокола
+
+Если OpenAPI и flow расходятся, реализация следует OpenAPI. Когда flow описывает требование, которого нет в OpenAPI, endpoint добавлен как совместимый alias без замены OpenAPI-контракта.
+
+Примеры:
+
+- approve: OpenAPI описывает `/api/v1/tickets/{ticket_id}/approve`; `/api/v1/products/{product_id}/approve` оставлен как alias для MOD-3.
+- block: OpenAPI описывает `/api/v1/tickets/{ticket_id}/block`; `/api/v1/products/{product_id}/decline` оставлен как alias для MOD-4/MOD-5.
 
 ## Авторизация
 

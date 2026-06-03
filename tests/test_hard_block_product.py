@@ -184,7 +184,8 @@ def test_any_modify_on_hard_blocked_returns_403(b2b_requests):
     for url, payload in [
         (f"/api/v1/products/{product_id}/decline", decline_payload()),
         (f"/api/v1/tickets/{ticket_id}/block", decline_payload()),
-        # POST /api/v1/products/{product_id}/approve will be tested once US-MOD-03 merges
+        (f"/api/v1/products/{product_id}/approve", {"moderator_comment": "ok"}),
+        (f"/api/v1/tickets/{ticket_id}/approve", {"comment": "ok"}),
     ]:
         resp = client.post(url, json=payload, headers=auth_headers(moderator_id))
         assert resp.status_code == 403, f"{url} should return 403, got {resp.status_code}"

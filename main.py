@@ -102,6 +102,12 @@ class BlockDecisionRequest(BaseModel):
 
 class ApproveDecisionRequest(BaseModel):
     moderator_comment: str | None = Field(default=None, max_length=1000)
+    comment: str | None = Field(default=None, max_length=2000)
+
+    @property
+    def decision_comment(self) -> str | None:
+        comment = self.moderator_comment if self.moderator_comment is not None else self.comment
+        return comment.strip() if comment and comment.strip() else None
 
 
 @dataclass(frozen=True)
@@ -324,21 +330,20 @@ class ProductEventRepository:
             reason = self._get_blocking_reason(connection, reason_id)
             if reason is None:
                 raise business_error("BLOCKING_REASON_NOT_FOUND", "Blocking reason not found")
-            if reason.hard_block:
-                raise business_error("HARD_BLOCK_REASON_NOT_ALLOWED", "Hard-block reason cannot be used for soft block")
 
+            status_value = "HARD_BLOCKED" if reason.hard_block else "BLOCKED"
             now = now_iso()
             connection.execute(
                 """
                 UPDATE product_moderation
-                SET status = 'BLOCKED',
+                SET status = ?,
                     blocking_reason_id = ?,
                     moderator_comment = ?,
                     date_moderation = ?,
                     date_updated = ?
                 WHERE id = ?
                 """,
-                (reason.id, moderator_comment, now, now, row["id"]),
+                (status_value, reason.id, moderator_comment, now, now, row["id"]),
             )
             connection.execute(
                 "DELETE FROM product_moderation_field_report WHERE product_moderation_id = ?",
@@ -369,6 +374,7 @@ class ProductEventRepository:
                 reason=reason,
                 moderator_comment=moderator_comment,
                 field_reports=field_reports,
+                hard_block=reason.hard_block,
             )
             send_moderation_event_to_b2b(
                 product_id=row["product_id"],
@@ -376,6 +382,7 @@ class ProductEventRepository:
                 reason_id=reason.id,
                 moderator_comment=moderator_comment,
                 field_reports=field_reports,
+                hard_block=reason.hard_block,
             )
             connection.commit()
             return response
@@ -388,14 +395,15 @@ class ProductEventRepository:
     def approve_card(
         self,
         *,
-        product_id: str,
+        product_id: str | None = None,
+        ticket_id: str | None = None,
         moderator_id: str,
         moderator_comment: str | None,
     ) -> dict[str, Any]:
         connection = self.connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = self._get_decision_card(connection, product_id=product_id)
+            row = self._get_decision_card(connection, product_id=product_id, ticket_id=ticket_id)
             if row is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -429,8 +437,12 @@ class ProductEventRepository:
                 moderator_id=moderator_id,
                 moderator_comment=moderator_comment,
             )
+            updated_row = connection.execute(
+                "SELECT * FROM product_moderation WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
             connection.commit()
-            return {"product_id": row["product_id"], "status": "MODERATED"}
+            return self._ticket_response_from_row(updated_row)
         except Exception:
             connection.rollback()
             raise
@@ -696,7 +708,7 @@ class ProductEventRepository:
 
     def _validate_decision_card(self, row: sqlite3.Row, moderator_id: str) -> None:
         if row["status"] == "HARD_BLOCKED":
-            raise conflict_error("PRODUCT_HARD_BLOCKED", "Product is permanently blocked")
+            raise forbidden_error("PRODUCT_HARD_BLOCKED", "Product is permanently blocked")
         if row["status"] != "IN_REVIEW":
             raise conflict_error("PRODUCT_NOT_IN_REVIEW", "Product is not in review")
         if row["moderator_id"] != moderator_id:
@@ -718,11 +730,12 @@ class ProductEventRepository:
         reason: BlockingReason,
         moderator_comment: str,
         field_reports: list[dict[str, Any]],
+        hard_block: bool,
     ) -> dict[str, Any]:
         return {
             "product_id": product_id,
-            "status": "BLOCKED",
-            "hard_block": False,
+            "status": "HARD_BLOCKED" if hard_block else "BLOCKED",
+            "hard_block": hard_block,
             "blocking_reason": {
                 "id": reason.id,
                 "title": reason.title,
@@ -965,6 +978,7 @@ def send_moderation_event_to_b2b(
     reason_id: str,
     moderator_comment: str,
     field_reports: list[dict[str, Any]],
+    hard_block: bool,
 ) -> None:
     b2b_url = os.getenv("B2B_URL", DEFAULT_B2B_URL).rstrip("/")
     timeout = float(os.getenv("B2B_TIMEOUT_SECONDS", str(DEFAULT_B2B_TIMEOUT_SECONDS)))
@@ -976,7 +990,7 @@ def send_moderation_event_to_b2b(
         "moderator_id": moderator_id,
         "moderator_comment": moderator_comment,
         "blocking_reason_id": reason_id,
-        "hard_block": False,
+        "hard_block": hard_block,
         "field_reports": field_reports,
     }
     response = httpx.post(
@@ -1128,7 +1142,21 @@ def approve_product(
     return repository.approve_card(
         product_id=str(product_id),
         moderator_id=moderator_id,
-        moderator_comment=request.moderator_comment if request else None,
+        moderator_comment=request.decision_comment if request else None,
+    )
+
+
+@app.post("/api/v1/tickets/{ticket_id}/approve", status_code=status.HTTP_200_OK)
+def approve_ticket(
+    ticket_id: UUID,
+    request: ApproveDecisionRequest | None = None,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict[str, Any]:
+    moderator_id = require_moderator_id(authorization)
+    return repository.approve_card(
+        ticket_id=str(ticket_id),
+        moderator_id=moderator_id,
+        moderator_comment=request.decision_comment if request else None,
     )
 
 

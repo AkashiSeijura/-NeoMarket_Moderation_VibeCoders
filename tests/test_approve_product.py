@@ -157,6 +157,33 @@ def test_approve_transitions_to_moderated_and_emits_event(b2b_get, b2b_post):
     assert posted["json"]["status"] == "MODERATED"
 
 
+def test_openapi_ticket_approve_path_accepts_comment_and_returns_ticket(b2b_get, b2b_post):
+    product_id = str(uuid4())
+    moderator_id = str(uuid4())
+    create_card(product_id=product_id, moderator_id=moderator_id, status_value="IN_REVIEW")
+    ticket_id = repository.get_card(product_id)["id"]
+
+    response = client.post(
+        f"/api/v1/tickets/{ticket_id}/approve",
+        json={"comment": "OpenAPI approve"},
+        headers=auth_headers(moderator_id),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == ticket_id
+    assert body["product_id"] == product_id
+    assert body["status"] == "MODERATED"
+    assert body["decision_at"] is None
+
+    card = repository.get_card(product_id)
+    assert card["status"] == "MODERATED"
+    assert card["moderator_comment"] == "OpenAPI approve"
+    assert len(b2b_get) == 1
+    assert len(b2b_post) == 1
+    assert b2b_post[0]["json"]["status"] == "MODERATED"
+
+
 def test_approve_others_card_returns_403(b2b_get, b2b_post):
     product_id = str(uuid4())
     owner_moderator_id = str(uuid4())

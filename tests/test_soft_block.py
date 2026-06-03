@@ -231,10 +231,13 @@ def test_soft_block_hard_only_reason_returns_400_or_routes_to_hard(b2b_requests)
         headers=auth_headers(moderator_id),
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "HARD_BLOCK_REASON_NOT_ALLOWED"
-    assert repository.get_card(product_id)["status"] == "IN_REVIEW"
-    assert b2b_requests == []
+    # US-MOD-05: hard_block reasons now route to HARD_BLOCKED instead of 400
+    assert response.status_code == 200
+    assert response.json()["status"] == "HARD_BLOCKED"
+    assert response.json()["hard_block"] is True
+    assert repository.get_card(product_id)["status"] == "HARD_BLOCKED"
+    assert len(b2b_requests) == 1
+    assert b2b_requests[0]["json"]["hard_block"] is True
 
 
 def test_soft_block_openapi_ticket_block_path_accepts_field_path_reports(b2b_requests):

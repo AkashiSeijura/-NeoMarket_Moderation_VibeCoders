@@ -1,62 +1,37 @@
-# US-MOD-03: approve product moderation decision
+# US-MOD-06: справочник причин блокировки
 
 ## Summary
 
-- Added OpenAPI-priority `POST /api/v1/tickets/{ticket_id}/approve`.
-- Kept canon-flow alias `POST /api/v1/products/{product_id}/approve`.
-- Implemented `IN_REVIEW` -> `MODERATED` transition with moderator ownership check.
-- Added B2B SKU validation before approval.
-- Added outgoing `MODERATED` event to B2B.
-- Preserved merged US-MOD-04/US-MOD-05 block behavior.
+- Добавлен read-API `GET /api/v1/blocking-reasons` по OpenAPI Moderation.
+- Добавлен совместимый alias `GET /api/v1/product-blocking-reasons` для flow-формулировки US-MOD-06.
+- Добавлены фильтры `hard_block` и `is_active`; по умолчанию API отдаёт только активные причины.
+- Добавлены CRUD-операции справочника через admin-like API `POST/PATCH/DELETE /api/v1/blocking-reasons`.
+- `DELETE` не удаляет запись физически, а переводит её в `is_active=false`, чтобы исторические BLOCKED/HARD_BLOCKED карточки сохраняли ссылку.
 
 ## Protocol note
 
-OpenAPI Moderation describes ticket-based approve:
-
-- `POST /api/v1/tickets/{ticket_id}/approve`
-- body field `comment`
-- response as `TicketResponse`
-
-The flow document describes product-based approve:
-
-- `POST /api/v1/products/{product_id}/approve`
-- product id based MOD-3 scenario
-
-The conflict is resolved by OpenAPI priority: ticket-based approve is implemented as the primary endpoint. Product-based approve is left as a compatibility alias because the flow describes it and OpenAPI does not provide a product-id variant.
-
-For block decisions the same rule is used: OpenAPI `/api/v1/tickets/{ticket_id}/block` is primary, while flow `/api/v1/products/{product_id}/decline` remains an alias. `hard_block=true` reasons route to `HARD_BLOCKED`; `hard_block=false` reasons route to `BLOCKED`.
-
-## Idempotency
-
-B2B already deduplicates moderation events by `idempotency_key`, and publishing the `MODERATED` status is safe on redelivery at the `product_id` / `status` level. The outgoing event carries a generated `idempotency_key`; no separate outbox table is introduced in this task.
+OpenAPI Moderation сейчас описывает `GET /api/v1/blocking-reasons`, а не `GET /product-blocking-reasons`. Так как при конфликте приоритет у OpenAPI, основной endpoint реализован как `/api/v1/blocking-reasons`. Для совместимости с flow-именованием добавлен alias `/api/v1/product-blocking-reasons` с тем же ответом и фильтрами.
 
 ## ADR
 
-Для доставки события `MODERATED` в B2B рассмотрены три варианта: синхронный POST из обработчика approve, outbox-pattern с фоновой отправкой и event-bus. Для текущей реализации выбран синхронный POST, потому что он проще, быстрее реализуется и напрямую соответствует учебному flow. Надежность обеспечивается транзакцией: если B2B не принимает событие, approve возвращает 500, изменения в `product_moderation` откатываются, и карточка остается в `IN_REVIEW` для повторной попытки. Outbox-pattern надежнее при долгих отказах B2B, но требует отдельной таблицы, фонового воркера и дополнительной идемпотентной обработки. Event-bus также отложен как более инфраструктурно сложный вариант.
+Рассмотрены три варианта хранения причин: enum в коде, таблица в БД с CRUD-админкой и i18n-каталог. Enum проще для разработки, но плохо подходит для добавления новой причины без релиза и не решает исторические ссылки при удалении. i18n-каталог удобен для многоязычности, но как первичное хранилище усложняет CRUD и ссылочную целостность. Выбрана таблица в БД: новую причину можно добавить через admin-like API, исторические карточки держат FK/id на запись, а `description`/будущие локализации можно расширять без изменения аналитического id.
 
 ## Tests
 
 ```text
-...............................                                          [100%]
-31 passed, 1 warning in 2.09s
+======================== 35 passed, 1 warning in 2.34s ========================
 ```
 
-Покрытые сценарии US-MOD-03:
+Покрытые сценарии US-MOD-06:
 
-- `test_approve_transitions_to_moderated_and_emits_event`
-- `test_openapi_ticket_approve_path_accepts_comment_and_returns_ticket`
-- `test_approve_others_card_returns_403`
-- `test_approve_after_edited_returns_409`
-- `test_approve_without_sku_returns_409`
-- `test_approve_b2b_event_failure_keeps_card_in_review`
+- `test_list_returns_active_reasons`
+- `test_inactive_reasons_not_visible`
+- `test_hard_block_filter_returns_matching_type`
+- `test_referenced_reason_cannot_be_deleted`
 
 ## Definition of Done
 
-- `POST /api/v1/tickets/{ticket_id}/approve` реализован по OpenAPI.
-- `POST /api/v1/products/{product_id}/approve` оставлен как flow alias.
-- При approve проверяются `IN_REVIEW` и назначенный модератор.
-- Перед approve проверяются актуальные SKU в B2B.
-- При ошибке отправки события в B2B локальный approve откатывается.
-- `HARD_BLOCKED` защищен от mutating endpoints, включая approve.
-- `README.md` обновлен.
-- `PR_DESCRIPTION.md` содержит ADR.
+- Активные причины возвращаются с полями `id`, `code`, `title`, `description`, `hard_block`, `is_active`.
+- Деактивированные причины скрыты при дефолтном `is_active=true`.
+- Фильтр `hard_block=true/false` работает для hard/soft причин.
+- Причины не удаляются физически; `DELETE` выполняет soft-delete и не ломает исторические карточки.

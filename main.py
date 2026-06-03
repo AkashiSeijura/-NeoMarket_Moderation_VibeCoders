@@ -40,6 +40,19 @@ BLOCKING_REASONS = [
     ("d6e7f8a9-0123-4567-7890-789012345678", "Товар нарушает авторские права", True),
 ]
 
+BLOCKING_REASON_CODES = {
+    "a7b8c9d0-1234-5678-ef01-890123456789": "DESCRIPTION_MISMATCH",
+    "b8c9d0e1-2345-6789-f012-901234567890": "IMAGE_MISMATCH",
+    "c9d0e1f2-3456-7890-0123-012345678901": "INCORRECT_CATEGORY",
+    "d0e1f2a3-4567-8901-1234-123456789012": "INSUFFICIENT_INFORMATION",
+    "e1f2a3b4-5678-9012-2345-234567890123": "OFFENSIVE_MATERIALS",
+    "f2a3b4c5-6789-0123-3456-345678901234": "DUPLICATE_PRODUCT",
+    "a3b4c5d6-7890-1234-4567-456789012345": "INCORRECT_PRICE",
+    "b4c5d6e7-8901-2345-5678-567890123456": "COUNTERFEIT_GOODS",
+    "c5d6e7f8-9012-3456-6789-678901234567": "PROHIBITED_GOODS",
+    "d6e7f8a9-0123-4567-7890-789012345678": "COPYRIGHT_VIOLATION",
+}
+
 
 class ErrorResponse(BaseModel):
     code: str
@@ -110,6 +123,19 @@ class ApproveDecisionRequest(BaseModel):
         return comment.strip() if comment and comment.strip() else None
 
 
+class BlockingReasonCreateRequest(BaseModel):
+    code: str = Field(pattern=r"^[A-Z_]+$", max_length=64)
+    title: str = Field(max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    hard_block: bool
+
+
+class BlockingReasonUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    is_active: bool | None = None
+
+
 @dataclass(frozen=True)
 class ProductEvent:
     event_type: str
@@ -125,8 +151,11 @@ class ProductEvent:
 @dataclass(frozen=True)
 class BlockingReason:
     id: str
+    code: str
     title: str
+    description: str | None
     hard_block: bool
+    is_active: bool
 
 
 class ProductEventRepository:
@@ -159,7 +188,10 @@ class ProductEventRepository:
                     date_created TEXT NOT NULL,
                     date_updated TEXT NOT NULL,
                     date_moderation TEXT,
-                    total_active_quantity INTEGER NOT NULL DEFAULT 0
+                    total_active_quantity INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (blocking_reason_id)
+                        REFERENCES product_blocking_reasons(id)
+                        ON DELETE RESTRICT
                 );
 
                 CREATE TABLE IF NOT EXISTS product_moderation_field_report (
@@ -176,8 +208,11 @@ class ProductEventRepository:
 
                 CREATE TABLE IF NOT EXISTS product_blocking_reasons (
                     id TEXT PRIMARY KEY,
+                    code TEXT,
                     title TEXT NOT NULL,
-                    hard_block INTEGER NOT NULL DEFAULT 0
+                    description TEXT,
+                    hard_block INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1
                 );
 
                 CREATE TABLE IF NOT EXISTS processed_product_events (
@@ -189,19 +224,50 @@ class ProductEventRepository:
                 );
                 """
             )
-            connection.executemany(
-                """
-                INSERT OR IGNORE INTO product_blocking_reasons (id, title, hard_block)
-                VALUES (?, ?, ?)
-                """,
-                [(reason_id, title, int(hard_block)) for reason_id, title, hard_block in BLOCKING_REASONS],
-            )
+            self._ensure_blocking_reason_schema(connection)
+            self._seed_blocking_reasons(connection)
 
     def reset(self) -> None:
         with self.connect() as connection:
             connection.execute("DELETE FROM product_moderation_field_report")
             connection.execute("DELETE FROM product_moderation")
             connection.execute("DELETE FROM processed_product_events")
+            connection.execute("DELETE FROM product_blocking_reasons")
+            self._seed_blocking_reasons(connection)
+
+    def _ensure_blocking_reason_schema(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(product_blocking_reasons)").fetchall()
+        }
+        if "code" not in columns:
+            connection.execute("ALTER TABLE product_blocking_reasons ADD COLUMN code TEXT")
+        if "description" not in columns:
+            connection.execute("ALTER TABLE product_blocking_reasons ADD COLUMN description TEXT")
+        if "is_active" not in columns:
+            connection.execute(
+                "ALTER TABLE product_blocking_reasons ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+            )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_product_blocking_reasons_code "
+            "ON product_blocking_reasons(code)"
+        )
+
+    def _seed_blocking_reasons(self, connection: sqlite3.Connection) -> None:
+        connection.executemany(
+            """
+            INSERT INTO product_blocking_reasons (id, code, title, description, hard_block, is_active)
+            VALUES (?, ?, ?, NULL, ?, 1)
+            ON CONFLICT(id) DO UPDATE SET
+                code = excluded.code,
+                title = excluded.title,
+                hard_block = excluded.hard_block
+            """,
+            [
+                (reason_id, BLOCKING_REASON_CODES[reason_id], title, int(hard_block))
+                for reason_id, title, hard_block in BLOCKING_REASONS
+            ],
+        )
 
     def get_card(self, product_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
@@ -210,6 +276,103 @@ class ProductEventRepository:
                 (product_id,),
             ).fetchone()
         return self._card_from_row(row) if row else None
+
+    def list_blocking_reasons(
+        self,
+        *,
+        hard_block: bool | None = None,
+        is_active: bool | None = True,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if hard_block is not None:
+            filters.append("hard_block = ?")
+            params.append(int(hard_block))
+        if is_active is not None:
+            filters.append("is_active = ?")
+            params.append(int(is_active))
+
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        query = f"""
+            SELECT *
+            FROM product_blocking_reasons
+            {where_clause}
+            ORDER BY hard_block ASC, title ASC
+        """
+        with self.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._blocking_reason_response_from_row(row) for row in rows]
+
+    def create_blocking_reason(self, request: BlockingReasonCreateRequest) -> dict[str, Any]:
+        reason_id = str(uuid4())
+        try:
+            with self.connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO product_blocking_reasons (
+                        id, code, title, description, hard_block, is_active
+                    )
+                    VALUES (?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        reason_id,
+                        request.code,
+                        request.title,
+                        request.description,
+                        int(request.hard_block),
+                    ),
+                )
+                row = connection.execute(
+                    "SELECT * FROM product_blocking_reasons WHERE id = ?",
+                    (reason_id,),
+                ).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise conflict_error("BLOCKING_REASON_CODE_EXISTS", "Blocking reason code already exists") from error
+        return self._blocking_reason_response_from_row(row)
+
+    def update_blocking_reason(
+        self,
+        reason_id: str,
+        request: BlockingReasonUpdateRequest,
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM product_blocking_reasons WHERE id = ?",
+                (reason_id,),
+            ).fetchone()
+            if row is None:
+                raise not_found_error("BLOCKING_REASON_NOT_FOUND", "Blocking reason not found")
+
+            connection.execute(
+                """
+                UPDATE product_blocking_reasons
+                SET title = COALESCE(?, title),
+                    description = CASE WHEN ? THEN ? ELSE description END,
+                    is_active = COALESCE(?, is_active)
+                WHERE id = ?
+                """,
+                (
+                    request.title,
+                    request.description is not None,
+                    request.description,
+                    int(request.is_active) if request.is_active is not None else None,
+                    reason_id,
+                ),
+            )
+            updated_row = connection.execute(
+                "SELECT * FROM product_blocking_reasons WHERE id = ?",
+                (reason_id,),
+            ).fetchone()
+        return self._blocking_reason_response_from_row(updated_row)
+
+    def deactivate_blocking_reason(self, reason_id: str) -> None:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE product_blocking_reasons SET is_active = 0 WHERE id = ?",
+                (reason_id,),
+            )
+            if cursor.rowcount == 0:
+                raise not_found_error("BLOCKING_REASON_NOT_FOUND", "Blocking reason not found")
 
     def create_test_card(
         self,
@@ -716,12 +879,29 @@ class ProductEventRepository:
 
     def _get_blocking_reason(self, connection: sqlite3.Connection, reason_id: str) -> BlockingReason | None:
         row = connection.execute(
-            "SELECT * FROM product_blocking_reasons WHERE id = ?",
+            "SELECT * FROM product_blocking_reasons WHERE id = ? AND is_active = 1",
             (reason_id,),
         ).fetchone()
         if row is None:
             return None
-        return BlockingReason(id=row["id"], title=row["title"], hard_block=bool(row["hard_block"]))
+        return BlockingReason(
+            id=row["id"],
+            code=row["code"],
+            title=row["title"],
+            description=row["description"],
+            hard_block=bool(row["hard_block"]),
+            is_active=bool(row["is_active"]),
+        )
+
+    def _blocking_reason_response_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "code": row["code"],
+            "title": row["title"],
+            "description": row["description"],
+            "hard_block": bool(row["hard_block"]),
+            "is_active": bool(row["is_active"]),
+        }
 
     def _blocked_response(
         self,
@@ -844,6 +1024,13 @@ def business_error(code: str, message: str) -> HTTPException:
 def conflict_error(code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
+        detail=ErrorResponse(code=code, message=message).model_dump(),
+    )
+
+
+def not_found_error(code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
         detail=ErrorResponse(code=code, message=message).model_dump(),
     )
 
@@ -1096,6 +1283,51 @@ def get_product_moderation(product_id: UUID) -> dict[str, Any]:
             detail=ErrorResponse(code="NOT_FOUND", message="Product moderation card not found").model_dump(),
         )
     return card
+
+
+@app.get("/api/v1/blocking-reasons")
+def list_blocking_reasons(
+    hard_block: bool | None = None,
+    is_active: bool | None = True,
+) -> list[dict[str, Any]]:
+    return repository.list_blocking_reasons(hard_block=hard_block, is_active=is_active)
+
+
+@app.get("/api/v1/product-blocking-reasons")
+def list_product_blocking_reasons(
+    hard_block: bool | None = None,
+    is_active: bool | None = True,
+) -> list[dict[str, Any]]:
+    return repository.list_blocking_reasons(hard_block=hard_block, is_active=is_active)
+
+
+@app.post("/api/v1/blocking-reasons", status_code=status.HTTP_201_CREATED)
+def create_blocking_reason(
+    request: BlockingReasonCreateRequest,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict[str, Any]:
+    require_moderator_id(authorization)
+    return repository.create_blocking_reason(request)
+
+
+@app.patch("/api/v1/blocking-reasons/{reason_id}", status_code=status.HTTP_200_OK)
+def update_blocking_reason(
+    reason_id: UUID,
+    request: BlockingReasonUpdateRequest,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> dict[str, Any]:
+    require_moderator_id(authorization)
+    return repository.update_blocking_reason(str(reason_id), request)
+
+
+@app.delete("/api/v1/blocking-reasons/{reason_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_blocking_reason(
+    reason_id: UUID,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> Response:
+    require_moderator_id(authorization)
+    repository.deactivate_blocking_reason(str(reason_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post("/api/v1/queue/claim", status_code=status.HTTP_200_OK)

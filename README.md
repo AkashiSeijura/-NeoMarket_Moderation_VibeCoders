@@ -1,6 +1,6 @@
 # NeoMarket Moderation
 
-Минимальный сервис Moderation для US-MOD-01, US-MOD-02, US-MOD-03, US-MOD-04 и US-MOD-05.
+Минимальный сервис Moderation для US-MOD-01, US-MOD-02, US-MOD-03, US-MOD-04, US-MOD-05 и US-MOD-06.
 
 ## Запуск тестов
 
@@ -17,6 +17,9 @@ C:\Users\perfe\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\p
 - `POST /api/v1/products/{product_id}/approve` - product-based alias из canon-flow MOD-3.
 - `POST /api/v1/tickets/{ticket_id}/block` - OpenAPI endpoint блокировки тикета.
 - `POST /api/v1/products/{product_id}/decline` - product-based alias из canon-flow MOD-4/MOD-5.
+- `GET /api/v1/blocking-reasons` - OpenAPI endpoint справочника причин; поддерживает `hard_block` и `is_active`, по умолчанию отдаёт только активные причины.
+- `GET /api/v1/product-blocking-reasons` - совместимый alias для flow-формулировки US-MOD-06.
+- `POST/PATCH/DELETE /api/v1/blocking-reasons` - CRUD справочника; `DELETE` выполняет soft-delete через `is_active=false`.
 - `GET /api/v1/product-moderation/{product_id}` - технический просмотр карточки по товару.
 
 `decline`/`block` определяет тип блокировки по `reason.hard_block`:
@@ -34,6 +37,7 @@ Moderation отправляет B2B событие `BLOCKED` с `hard_block=true
 
 - approve: OpenAPI описывает `/api/v1/tickets/{ticket_id}/approve`; `/api/v1/products/{product_id}/approve` оставлен как alias для MOD-3.
 - block: OpenAPI описывает `/api/v1/tickets/{ticket_id}/block`; `/api/v1/products/{product_id}/decline` оставлен как alias для MOD-4/MOD-5.
+- blocking reasons: OpenAPI описывает `/api/v1/blocking-reasons`; `/api/v1/product-blocking-reasons` оставлен как alias для flow-формулировки MOD-6.
 
 ## Авторизация
 

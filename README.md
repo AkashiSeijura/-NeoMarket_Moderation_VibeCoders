@@ -1,6 +1,6 @@
 # NeoMarket Moderation
 
-Минимальный сервис Moderation для US-MOD-01, US-MOD-02 и US-MOD-04.
+Минимальный сервис Moderation для US-MOD-01, US-MOD-02, US-MOD-03 и US-MOD-04.
 
 ## Запуск тестов
 
@@ -13,6 +13,10 @@ C:\Users\perfe\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\p
 - `POST /api/v1/b2b/events` - основной endpoint приема событий от B2B по OpenAPI Moderation.
 - `POST /api/v1/events/product` - совместимый alias под канон MOD-1.
 - `POST /api/v1/queue/claim` - взять следующий тикет в работу по OpenAPI Moderation.
+- `POST /api/v1/products/{product_id}/approve` - approve товара модератором по canon-flow MOD-3:
+  переводит карточку `IN_REVIEW` -> `MODERATED`; доступен только модератору, за которым закреплена
+  карточка; перед approve проверяет актуальные SKU в B2B (`GET /api/v1/products/{product_id}`);
+  отправляет `MODERATED` event в B2B (`POST /api/v1/events/moderation`).
 - `POST /api/v1/products/{product_id}/decline` - canonical soft-block по product_id.
 - `POST /api/v1/tickets/{ticket_id}/block` - OpenAPI-совместимый block endpoint по ticket_id.
 - `GET /api/v1/product-moderation/{product_id}` - технический просмотр карточки по товару.

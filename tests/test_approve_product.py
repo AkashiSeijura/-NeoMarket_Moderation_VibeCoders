@@ -197,7 +197,7 @@ def test_approve_others_card_returns_403(b2b_get, b2b_post):
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "NOT_ASSIGNED_TO_YOU"
+    assert response.json()["code"] == "NOT_ASSIGNED_TO_YOU"
     assert repository.get_card(product_id)["status"] == "IN_REVIEW"
     assert b2b_get == []
     assert b2b_post == []
@@ -215,7 +215,7 @@ def test_approve_after_edited_returns_409(b2b_get, b2b_post):
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "PRODUCT_NOT_IN_REVIEW"
+    assert response.json()["code"] == "PRODUCT_NOT_IN_REVIEW"
     assert repository.get_card(product_id)["status"] == "PENDING"
     assert b2b_get == []
     assert b2b_post == []
@@ -234,7 +234,7 @@ def test_approve_without_sku_returns_409(b2b_get, b2b_post):
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "PRODUCT_WITHOUT_SKU"
+    assert response.json()["code"] == "PRODUCT_WITHOUT_SKU"
     assert repository.get_card(product_id)["status"] == "IN_REVIEW"
     assert repository.count_field_reports(product_id) == 0
     assert b2b_post == []

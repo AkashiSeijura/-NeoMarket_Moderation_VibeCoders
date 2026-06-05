@@ -7,7 +7,8 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 
@@ -1063,6 +1064,14 @@ def dict_optional(payload: dict[str, Any], field_name: str) -> dict[str, Any] | 
 
 repository = ProductEventRepository()
 app = FastAPI(title="NeoMarket Moderation API")
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Return error body at the top level — {code, message} — without FastAPI's default detail wrapper."""
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.post("/api/v1/b2b/events", status_code=status.HTTP_202_ACCEPTED)

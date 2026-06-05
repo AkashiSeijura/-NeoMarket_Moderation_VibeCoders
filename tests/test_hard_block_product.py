@@ -188,7 +188,7 @@ def test_any_modify_on_hard_blocked_returns_403(b2b_requests):
     ]:
         resp = client.post(url, json=payload, headers=auth_headers(moderator_id))
         assert resp.status_code == 403, f"{url} should return 403, got {resp.status_code}"
-        assert resp.json()["detail"]["code"] == "PRODUCT_HARD_BLOCKED"
+        assert resp.json()["code"] == "PRODUCT_HARD_BLOCKED"
 
     assert repository.get_card(product_id)["status"] == "HARD_BLOCKED"
     assert b2b_requests == []

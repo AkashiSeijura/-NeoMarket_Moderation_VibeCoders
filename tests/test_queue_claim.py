@@ -131,7 +131,7 @@ def test_moderator_already_has_in_review_returns_409():
     response = client.post("/api/v1/queue/claim", headers=auth_headers(moderator_id))
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "MODERATOR_ALREADY_HAS_IN_REVIEW"
+    assert response.json()["code"] == "MODERATOR_ALREADY_HAS_IN_REVIEW"
     assert repository.get_card(active_product_id)["status"] == "IN_REVIEW"
     assert repository.get_card(pending_product_id)["status"] == "PENDING"
 

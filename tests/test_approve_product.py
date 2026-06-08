@@ -151,10 +151,11 @@ def test_approve_transitions_to_moderated_and_emits_event(b2b_get, b2b_post):
 
     assert len(b2b_post) == 1
     posted = b2b_post[0]
-    assert posted["url"] == "http://b2b:8000/api/v1/events/moderation"
+    assert posted["url"] == "http://b2b:8000/api/v1/moderation/events"
     assert "idempotency_key" in posted["json"]
+    assert "occurred_at" in posted["json"]
     assert posted["json"]["product_id"] == product_id
-    assert posted["json"]["status"] == "MODERATED"
+    assert posted["json"]["event_type"] == "MODERATED"
 
 
 def test_openapi_ticket_approve_path_accepts_comment_and_returns_ticket(b2b_get, b2b_post):
@@ -181,7 +182,7 @@ def test_openapi_ticket_approve_path_accepts_comment_and_returns_ticket(b2b_get,
     assert card["moderator_comment"] == "OpenAPI approve"
     assert len(b2b_get) == 1
     assert len(b2b_post) == 1
-    assert b2b_post[0]["json"]["status"] == "MODERATED"
+    assert b2b_post[0]["json"]["event_type"] == "MODERATED"
 
 
 def test_approve_others_card_returns_403(b2b_get, b2b_post):

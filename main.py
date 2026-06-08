@@ -961,10 +961,13 @@ def send_approve_event_to_b2b(
     payload = {
         "idempotency_key": str(uuid4()),
         "product_id": product_id,
-        "status": "MODERATED",
+        "event_type": "MODERATED",
+        "occurred_at": now_iso(),
+        "moderator_id": moderator_id,
+        "moderator_comment": moderator_comment,
     }
     response = httpx.post(
-        f"{b2b_url}/api/v1/events/moderation",
+        f"{b2b_url}/api/v1/moderation/events",
         json=payload,
         headers={"X-Service-Key": os.getenv("MOD_TO_B2B_KEY", DEFAULT_MOD_TO_B2B_KEY)},
         timeout=timeout,

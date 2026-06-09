@@ -137,10 +137,10 @@ def test_approve_transitions_to_moderated_and_emits_event(b2b_get, b2b_post):
     assert response.status_code == 200
     body = response.json()
     assert body["product_id"] == product_id
-    assert body["status"] == "MODERATED"
+    assert body["status"] == "APPROVED"
 
     card = repository.get_card(product_id)
-    assert card["status"] == "MODERATED"
+    assert card["status"] == "APPROVED"
     assert card["date_moderation"] is not None
     assert card["moderator_comment"] == "ok"
     assert card["blocking_reason_id"] is None
@@ -174,11 +174,11 @@ def test_openapi_ticket_approve_path_accepts_comment_and_returns_ticket(b2b_get,
     body = response.json()
     assert body["id"] == ticket_id
     assert body["product_id"] == product_id
-    assert body["status"] == "MODERATED"
+    assert body["status"] == "APPROVED"
     assert body["decision_at"] is None
 
     card = repository.get_card(product_id)
-    assert card["status"] == "MODERATED"
+    assert card["status"] == "APPROVED"
     assert card["moderator_comment"] == "OpenAPI approve"
     assert len(b2b_get) == 1
     assert len(b2b_post) == 1

@@ -420,7 +420,7 @@ class ProductEventRepository:
             connection.execute(
                 """
                 UPDATE product_moderation
-                SET status = 'MODERATED',
+                SET status = 'APPROVED',
                     date_moderation = ?,
                     moderator_comment = ?,
                     blocking_reason_id = NULL,

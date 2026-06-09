@@ -137,10 +137,10 @@ def test_approve_transitions_to_moderated_and_emits_event(b2b_get, b2b_post):
     assert response.status_code == 200
     body = response.json()
     assert body["product_id"] == product_id
-    assert body["status"] == "MODERATED"
+    assert body["status"] == "APPROVED"
 
     card = repository.get_card(product_id)
-    assert card["status"] == "MODERATED"
+    assert card["status"] == "APPROVED"
     assert card["date_moderation"] is not None
     assert card["moderator_comment"] == "ok"
     assert card["blocking_reason_id"] is None
@@ -151,10 +151,11 @@ def test_approve_transitions_to_moderated_and_emits_event(b2b_get, b2b_post):
 
     assert len(b2b_post) == 1
     posted = b2b_post[0]
-    assert posted["url"] == "http://b2b:8000/api/v1/events/moderation"
+    assert posted["url"] == "http://b2b:8000/api/v1/moderation/events"
     assert "idempotency_key" in posted["json"]
+    assert "occurred_at" in posted["json"]
     assert posted["json"]["product_id"] == product_id
-    assert posted["json"]["status"] == "MODERATED"
+    assert posted["json"]["event_type"] == "MODERATED"
 
 
 def test_openapi_ticket_approve_path_accepts_comment_and_returns_ticket(b2b_get, b2b_post):
@@ -173,15 +174,15 @@ def test_openapi_ticket_approve_path_accepts_comment_and_returns_ticket(b2b_get,
     body = response.json()
     assert body["id"] == ticket_id
     assert body["product_id"] == product_id
-    assert body["status"] == "MODERATED"
+    assert body["status"] == "APPROVED"
     assert body["decision_at"] is None
 
     card = repository.get_card(product_id)
-    assert card["status"] == "MODERATED"
+    assert card["status"] == "APPROVED"
     assert card["moderator_comment"] == "OpenAPI approve"
     assert len(b2b_get) == 1
     assert len(b2b_post) == 1
-    assert b2b_post[0]["json"]["status"] == "MODERATED"
+    assert b2b_post[0]["json"]["event_type"] == "MODERATED"
 
 
 def test_approve_others_card_returns_403(b2b_get, b2b_post):
@@ -197,7 +198,7 @@ def test_approve_others_card_returns_403(b2b_get, b2b_post):
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "NOT_ASSIGNED_TO_YOU"
+    assert response.json()["code"] == "NOT_ASSIGNED_TO_YOU"
     assert repository.get_card(product_id)["status"] == "IN_REVIEW"
     assert b2b_get == []
     assert b2b_post == []
@@ -215,7 +216,7 @@ def test_approve_after_edited_returns_409(b2b_get, b2b_post):
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "PRODUCT_NOT_IN_REVIEW"
+    assert response.json()["code"] == "PRODUCT_NOT_IN_REVIEW"
     assert repository.get_card(product_id)["status"] == "PENDING"
     assert b2b_get == []
     assert b2b_post == []
@@ -234,7 +235,7 @@ def test_approve_without_sku_returns_409(b2b_get, b2b_post):
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "PRODUCT_WITHOUT_SKU"
+    assert response.json()["code"] == "PRODUCT_WITHOUT_SKU"
     assert repository.get_card(product_id)["status"] == "IN_REVIEW"
     assert repository.count_field_reports(product_id) == 0
     assert b2b_post == []

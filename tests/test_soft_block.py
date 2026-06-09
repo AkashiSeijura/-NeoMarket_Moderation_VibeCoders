@@ -175,7 +175,7 @@ def test_soft_block_unknown_reason_returns_400(b2b_requests):
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "BLOCKING_REASON_NOT_FOUND"
+    assert response.json()["code"] == "BLOCKING_REASON_NOT_FOUND"
     assert repository.get_card(product_id)["status"] == "IN_REVIEW"
     assert b2b_requests == []
 
@@ -192,7 +192,7 @@ def test_soft_block_others_card_returns_403(b2b_requests):
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "NOT_ASSIGNED_TO_YOU"
+    assert response.json()["code"] == "NOT_ASSIGNED_TO_YOU"
     assert repository.get_card(product_id)["status"] == "IN_REVIEW"
     assert b2b_requests == []
 
@@ -216,7 +216,7 @@ def test_soft_block_invalid_field_name_returns_400(b2b_requests):
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "INVALID_FIELD_NAME"
+    assert response.json()["code"] == "INVALID_FIELD_NAME"
     assert repository.get_card(product_id)["status"] == "IN_REVIEW"
     assert b2b_requests == []
 

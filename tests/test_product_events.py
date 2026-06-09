@@ -95,7 +95,7 @@ def test_edited_returns_to_review():
     repository.create_test_card(
         product_id=product_id,
         seller_id=seller_id,
-        status_value="MODERATED",
+        status_value="APPROVED",
         json_after=old_snapshot,
         queue_priority=1,
     )

@@ -7,7 +7,8 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 
@@ -582,7 +583,7 @@ class ProductEventRepository:
             connection.execute(
                 """
                 UPDATE product_moderation
-                SET status = 'MODERATED',
+                SET status = 'APPROVED',
                     date_moderation = ?,
                     moderator_comment = ?,
                     blocking_reason_id = NULL,
@@ -1147,10 +1148,13 @@ def send_approve_event_to_b2b(
     payload = {
         "idempotency_key": str(uuid4()),
         "product_id": product_id,
-        "status": "MODERATED",
+        "event_type": "MODERATED",
+        "occurred_at": now_iso(),
+        "moderator_id": moderator_id,
+        "moderator_comment": moderator_comment,
     }
     response = httpx.post(
-        f"{b2b_url}/api/v1/events/moderation",
+        f"{b2b_url}/api/v1/moderation/events",
         json=payload,
         headers={"X-Service-Key": os.getenv("MOD_TO_B2B_KEY", DEFAULT_MOD_TO_B2B_KEY)},
         timeout=timeout,
@@ -1250,6 +1254,14 @@ def dict_optional(payload: dict[str, Any], field_name: str) -> dict[str, Any] | 
 
 repository = ProductEventRepository()
 app = FastAPI(title="NeoMarket Moderation API")
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Return error body at the top level — {code, message} — without FastAPI's default detail wrapper."""
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.post("/api/v1/b2b/events", status_code=status.HTTP_202_ACCEPTED)
